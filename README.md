@@ -6,154 +6,199 @@ workflow.
 
 ## Current status
 
-**Commit 4 — Metadata-aware document chunking**
+**Commit 5 — Local embeddings and persistent Chroma vector index**
 
-The ingestion layer now converts normalized knowledge documents into retrieval-ready
-`KnowledgeChunk` objects while preserving troubleshooting context.
+The project can now convert metadata-aware `KnowledgeChunk` objects into normalized dense
+embeddings and persist them in a local Chroma collection.
 
-Chunk metadata can include:
-
-- source and source type
-- section heading
-- endpoint
-- HTTP method
-- HTTP status code(s)
-- service
-- incident ID
-- OpenAPI operation ID
-- chunk index and chunk count
-
-## Why metadata-aware chunking matters
-
-Naive fixed-character splitting can separate an error explanation from the heading or
-endpoint that gives it meaning. The current chunker first respects document structure and
-then applies bounded splitting only when a section is too large.
-
-For Markdown, section headings are repeated on split chunks so each retrieval unit remains
-understandable in isolation.
-
-For OpenAPI, the raw specification is not treated as one giant YAML document. Each API
-operation becomes its own retrieval unit.
-
-For example:
+The indexing flow is:
 
 ```text
-POST /api/v1/orders
-GET /api/v1/orders/{order_id}
-GET /health
+Raw knowledge
+      ↓
+Document loaders
+      ↓
+KnowledgeDocument
+      ↓
+Metadata-aware chunking
+      ↓
+KnowledgeChunk
+      ↓
+Sentence Transformer
+      ↓
+Dense embedding
+      ↓
+Persistent Chroma collection
 ```
 
-OpenAPI chunks also include locally referenced parameters, schemas, and response
-definitions so a retrieved endpoint chunk contains useful contract details instead of only
-unresolved `$ref` values.
+## Embedding design
 
-## Retrieval-ready model
+The application uses a small internal `Embedder` protocol instead of coupling the rest of
+the code directly to Sentence Transformers.
 
-```python
-KnowledgeChunk(
-    chunk_id="chunk-...",
-    content="...",
-    source="docs/orders_api.md",
-    source_type=SourceType.DOCUMENTATION,
-    metadata={
-        "section": "Create Order",
-        "endpoint": "/api/v1/orders",
-        "http_method": "POST",
-        "status_code": 409,
-        "service": "order-service",
-        "chunk_index": 0,
-        "chunk_count": 1,
-    },
-)
-```
-
-Chunk IDs are deterministic SHA-256-derived identifiers based on source, chunk position,
-and content.
-
-## Project structure
-
-Commit 4 adds or changes:
+The production implementation is:
 
 ```text
-app/ingestion/
-├── __init__.py
-├── chunking.py
-└── models.py
-
-scripts/
-└── inspect_chunks.py
-
-tests/
-└── test_chunking.py
+SentenceTransformerEmbedder
 ```
 
-No new dependency is introduced in this commit.
+Default model:
 
-## Inspect the chunks
+```text
+sentence-transformers/all-MiniLM-L6-v2
+```
+
+Embeddings are normalized before storage.
+
+This abstraction will also let later code replace the local model with another embedding
+provider without changing the vector-store interface.
+
+## Persistent vector store
+
+`ChromaVectorStore` uses a local Chroma persistent client.
+
+The default index is stored under:
+
+```text
+chroma_db/
+```
+
+This directory is already ignored by Git.
+
+The collection name defaults to:
+
+```text
+order-service-knowledge
+```
+
+Index writes use `upsert`, making repeated indexing safe for deterministic chunk IDs.
+
+## Metadata compatibility
+
+Knowledge chunks can contain useful non-scalar metadata such as historical-incident
+symptoms or signatures.
+
+Before metadata is written to Chroma:
+
+- strings, integers, floats, and booleans are preserved;
+- `None` values are omitted;
+- lists and dictionaries are serialized to deterministic JSON strings;
+- `source` and `source_type` are always added.
+
+This keeps the vector database representation stable while retaining troubleshooting
+context.
+
+## Configuration
+
+Commit 5 adds:
+
+```text
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_BATCH_SIZE=32
+CHROMA_PERSIST_DIR=chroma_db
+CHROMA_COLLECTION_NAME=order-service-knowledge
+VECTOR_UPSERT_BATCH_SIZE=64
+```
+
+Copy any new values you want from `.env.example` into your local `.env`. Existing defaults
+also work without explicitly adding them.
+
+## Install dependencies
+
+Commit 5 introduces:
+
+- `sentence-transformers`
+- `chromadb`
+
+Update the active virtual environment with:
 
 ```bash
-python -m scripts.inspect_chunks
+pip install -r requirements.txt
 ```
 
-With the Commit 2 sample knowledge base and default chunk settings, the expected summary is:
+The first real index build may download the configured Sentence Transformer model if it is
+not already present in the local model cache.
+
+## Build the index
+
+```bash
+python -m scripts.build_index
+```
+
+With the current sample knowledge base, the summary should include:
 
 ```text
 Loaded 15 knowledge documents
 Created 61 retrieval chunks
-- documentation: 29
-- incident: 6
-- openapi: 9
-- runbook: 17
+Indexed 61 chunks
+Collection count: 61
+Collection: order-service-knowledge
+Persistence directory: chroma_db
+Embedding model: sentence-transformers/all-MiniLM-L6-v2
 ```
 
-The script also prints sample chunk IDs and metadata.
+The build script deliberately performs a clean collection reset before indexing. This makes
+local development reproducible when chunking or source data changes.
 
-## Validate
+## Tests
+
+Vector-store tests use a deterministic in-memory test embedder instead of downloading an ML
+model. This keeps the test suite fast and repeatable.
+
+Run:
 
 ```bash
 ruff check .
 pytest
-python -m scripts.inspect_chunks
 ```
 
-The chunking test suite covers:
+Commit 5 tests cover:
 
-- Markdown section preservation
-- endpoint/method/status extraction
-- long-section splitting
-- incident metadata preservation
-- OpenAPI operation-level chunking
-- local OpenAPI `$ref` resolution
-- deterministic unique chunk IDs
-- full-repository chunk generation
-- invalid chunk-size configuration
+- embedding input validation
+- lazy model loading behavior
+- Chroma persistence across store instances
+- idempotent upserts
+- metadata sanitization
+- collection reset
+- invalid embedding output handling
 
-## Architecture so far
+## Files added or changed
 
 ```text
-Raw knowledge sources
-        ↓
-Document loaders
-        ↓
-KnowledgeDocument
-        ↓
-Metadata-aware chunker
-        ↓
-KnowledgeChunk
-        ↓
-Embedding + vector index (next)
+app/
+├── config.py
+└── rag/
+    ├── __init__.py
+    ├── embeddings.py
+    └── vector_store.py
+
+scripts/
+└── build_index.py
+
+tests/
+├── test_embeddings.py
+└── test_vector_store.py
+
+.env.example
+pyproject.toml
+README.md
 ```
 
-Operational logs remain outside this flow. They will later be accessed through a dedicated
-log-search tool.
+## Architecture boundary
+
+Commit 5 is responsible for **index construction and persistence**.
+
+It does not yet implement semantic retrieval. Query embedding, nearest-neighbor retrieval,
+metadata filters, ranking, and citation-ready results are intentionally reserved for
+Commit 6.
 
 ## Next commit
 
-Commit 5 will add the embedding model and Chroma vector store so these chunks can be
-indexed for semantic retrieval.
+Commit 6 will implement metadata-aware semantic retrieval with source attribution and
+retrieval result models.
 
 ## Commit message
 
 ```text
-feat: add metadata-aware document chunking
+feat: add Chroma vector store and knowledge indexing
 ```
