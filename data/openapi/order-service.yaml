@@ -1,0 +1,276 @@
+openapi: 3.1.0
+info:
+  title: Order Service API
+  version: 1.0.0
+  description: Fictional API used by the Agentic API Troubleshooting Assistant.
+servers:
+  - url: https://api.example.internal
+
+paths:
+  /api/v1/orders:
+    post:
+      operationId: createOrder
+      summary: Create an order
+      security:
+        - bearerAuth:
+            - orders:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/MalformedRequest'
+        '401':
+          $ref: '#/components/responses/InvalidToken'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailure'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '500':
+          $ref: '#/components/responses/DatabaseUnavailable'
+        '502':
+          $ref: '#/components/responses/PaymentDependencyFailed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/PaymentTimeout'
+
+  /api/v1/orders/{order_id}:
+    get:
+      operationId: getOrder
+      summary: Get an order
+      security:
+        - bearerAuth:
+            - orders:read
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Order found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/InvalidToken'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/OrderNotFound'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /health:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.internal/oauth2/token
+          scopes:
+            orders:read: Read orders
+            orders:write: Create orders
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+
+  schemas:
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [customer_id, items, payment_method]
+      properties:
+        customer_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        payment_method:
+          type: string
+          minLength: 1
+
+    OrderItem:
+      type: object
+      additionalProperties: false
+      required: [sku, quantity]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+        quantity:
+          type: integer
+          minimum: 1
+
+    Order:
+      type: object
+      required: [order_id, status, customer_id, items]
+      properties:
+        order_id:
+          type: string
+        status:
+          type: string
+          enum: [created, payment_authorized, failed]
+        customer_id:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+  responses:
+    MalformedRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: malformed_request, message: Request body is not valid JSON.}
+
+    InvalidToken:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: invalid_token, message: The supplied access token is invalid or expired.}
+
+    InsufficientScope:
+      description: Missing required OAuth scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: insufficient_scope, message: Required scope is missing.}
+
+    OrderNotFound:
+      description: Order does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: order_not_found, message: The requested order does not exist.}
+
+    IdempotencyConflict:
+      description: Idempotency key reused with a different payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: duplicate_idempotency_key, message: Idempotency key conflicts with another payload.}
+
+    ValidationFailure:
+      description: Request violates schema
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: schema_validation_failed, message: Request failed schema validation.}
+
+    RateLimitExceeded:
+      description: Request quota exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: rate_limit_exceeded, message: Too many requests.}
+
+    DatabaseUnavailable:
+      description: Database operation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: database_unavailable, message: Order persistence failed.}
+
+    PaymentDependencyFailed:
+      description: Payment Service returned a failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: payment_dependency_failed, message: Payment authorization failed.}
+
+    ServiceUnavailable:
+      description: Service temporarily unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: service_unavailable, message: Service is temporarily unavailable.}
+
+    PaymentTimeout:
+      description: Payment authorization exceeded timeout
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example: {error: payment_timeout, message: Payment authorization timed out.}
