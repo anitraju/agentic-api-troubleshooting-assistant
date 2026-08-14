@@ -6,160 +6,154 @@ workflow.
 
 ## Current status
 
-**Commit 3 — Knowledge-base document loaders**
+**Commit 4 — Metadata-aware document chunking**
 
-The project now has an ingestion layer that converts the heterogeneous troubleshooting
-knowledge base into a common `KnowledgeDocument` representation.
+The ingestion layer now converts normalized knowledge documents into retrieval-ready
+`KnowledgeChunk` objects while preserving troubleshooting context.
 
-Supported RAG knowledge sources:
+Chunk metadata can include:
 
-- Markdown API documentation
-- Markdown operational runbooks
-- historical incidents stored as JSON
-- the Order Service OpenAPI YAML specification
+- source and source type
+- section heading
+- endpoint
+- HTTP method
+- HTTP status code(s)
+- service
+- incident ID
+- OpenAPI operation ID
+- chunk index and chunk count
 
-Structured request logs are intentionally **not** loaded into the RAG knowledge base. They
-are request-specific operational evidence and will later be accessed through a dedicated
-log-search tool.
+## Why metadata-aware chunking matters
 
-## Ingestion model
+Naive fixed-character splitting can separate an error explanation from the heading or
+endpoint that gives it meaning. The current chunker first respects document structure and
+then applies bounded splitting only when a section is too large.
 
-Every loaded source is normalized to:
+For Markdown, section headings are repeated on split chunks so each retrieval unit remains
+understandable in isolation.
+
+For OpenAPI, the raw specification is not treated as one giant YAML document. Each API
+operation becomes its own retrieval unit.
+
+For example:
+
+```text
+POST /api/v1/orders
+GET /api/v1/orders/{order_id}
+GET /health
+```
+
+OpenAPI chunks also include locally referenced parameters, schemas, and response
+definitions so a retrieved endpoint chunk contains useful contract details instead of only
+unresolved `$ref` values.
+
+## Retrieval-ready model
 
 ```python
-KnowledgeDocument(
+KnowledgeChunk(
+    chunk_id="chunk-...",
     content="...",
-    source="...",
+    source="docs/orders_api.md",
     source_type=SourceType.DOCUMENTATION,
-    metadata={...},
+    metadata={
+        "section": "Create Order",
+        "endpoint": "/api/v1/orders",
+        "http_method": "POST",
+        "status_code": 409,
+        "service": "order-service",
+        "chunk_index": 0,
+        "chunk_count": 1,
+    },
 )
 ```
 
-The source types are:
-
-- `documentation`
-- `runbook`
-- `incident`
-- `openapi`
-
-Historical incident records are loaded as independent documents, which makes it possible
-for retrieval to return one specific known incident rather than the entire incident file.
-
-## Current knowledge-base counts
-
-The controlled sample environment produces:
-
-| Source type | Documents |
-|---|---:|
-| Documentation | 4 |
-| Runbooks | 4 |
-| Historical incidents | 6 |
-| OpenAPI specifications | 1 |
-| **Total** | **15** |
+Chunk IDs are deterministic SHA-256-derived identifiers based on source, chunk position,
+and content.
 
 ## Project structure
 
+Commit 4 adds or changes:
+
 ```text
-app/
-└── ingestion/
-    ├── __init__.py
-    ├── loaders.py
-    └── models.py
+app/ingestion/
+├── __init__.py
+├── chunking.py
+└── models.py
 
 scripts/
-└── inspect_knowledge_base.py
+└── inspect_chunks.py
 
 tests/
-└── test_ingestion.py
+└── test_chunking.py
 ```
 
-## Requirements
+No new dependency is introduced in this commit.
 
-- Python 3.11 or newer
-- `pip`
-- Git
-
-Commit 3 introduces `PyYAML` for safe OpenAPI YAML parsing.
-
-## Install or update dependencies
-
-With the virtual environment active:
+## Inspect the chunks
 
 ```bash
-pip install -r requirements.txt
+python -m scripts.inspect_chunks
 ```
 
-Because `requirements.txt` installs the project in editable mode, the new `PyYAML`
-dependency declared in `pyproject.toml` will be installed automatically.
-
-## Run the application
-
-```bash
-python -m app.main
-```
-
-## Inspect the ingestion pipeline
-
-```bash
-python -m scripts.inspect_knowledge_base
-```
-
-Expected output:
+With the Commit 2 sample knowledge base and default chunk settings, the expected summary is:
 
 ```text
 Loaded 15 knowledge documents
-- documentation: 4
+Created 61 retrieval chunks
+- documentation: 29
 - incident: 6
-- openapi: 1
-- runbook: 4
+- openapi: 9
+- runbook: 17
 ```
 
-It will also print every normalized source.
+The script also prints sample chunk IDs and metadata.
 
 ## Validate
 
 ```bash
 ruff check .
 pytest
+python -m scripts.inspect_chunks
 ```
 
-The ingestion tests verify:
+The chunking test suite covers:
 
-- Markdown title and metadata extraction
-- one-document-per-incident normalization
-- malformed incident structure handling
-- OpenAPI metadata parsing
-- expected full-repository knowledge counts
-- exclusion of structured request logs from the RAG corpus
+- Markdown section preservation
+- endpoint/method/status extraction
+- long-section splitting
+- incident metadata preservation
+- OpenAPI operation-level chunking
+- local OpenAPI `$ref` resolution
+- deterministic unique chunk IDs
+- full-repository chunk generation
+- invalid chunk-size configuration
 
-## Why logs are excluded from RAG ingestion
-
-API documentation, runbooks, and historical incidents are relatively stable knowledge.
-Request logs are dynamic evidence tied to a specific troubleshooting investigation.
-
-Keeping these concerns separate allows the final agent to combine:
+## Architecture so far
 
 ```text
-retrieved knowledge
-        +
-request-specific log evidence
-        +
-OpenAPI inspection
-        +
-historical incident lookup
+Raw knowledge sources
         ↓
-evidence-based diagnosis
+Document loaders
+        ↓
+KnowledgeDocument
+        ↓
+Metadata-aware chunker
+        ↓
+KnowledgeChunk
+        ↓
+Embedding + vector index (next)
 ```
 
-rather than embedding every operational log line into the knowledge vector store.
+Operational logs remain outside this flow. They will later be accessed through a dedicated
+log-search tool.
 
 ## Next commit
 
-Commit 4 will add metadata-aware chunking so long documents can be split into retrieval
-units without losing source, section, endpoint, HTTP status, and other useful context.
+Commit 5 will add the embedding model and Chroma vector store so these chunks can be
+indexed for semantic retrieval.
 
 ## Commit message
 
 ```text
-feat: implement knowledge base document loaders
+feat: add metadata-aware document chunking
 ```

@@ -22,3 +22,13 @@ class KnowledgeDocument(BaseModel):
     source: str = Field(min_length=1)
     source_type: SourceType
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeChunk(BaseModel):
+    """Retrieval-ready chunk derived from a normalized knowledge document."""
+
+    chunk_id: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    source: str = Field(min_length=1)
+    source_type: SourceType
+    metadata: dict[str, Any] = Field(default_factory=dict)
