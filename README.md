@@ -6,74 +6,58 @@ workflow.
 
 ## Current status
 
-**Commit 1 — Project initialization**
+**Commit 2 — Sample Order Service troubleshooting environment**
 
-This commit establishes the repository structure, Python packaging, environment-based
-configuration, console logging, and development tooling.
+The repository now contains a deterministic fictional Order Service environment that will
+serve as the knowledge base and ground-truth dataset for later RAG and agentic commits.
 
-Later commits will add:
+The sample data includes:
 
-- realistic API troubleshooting data
-- document ingestion and metadata-aware chunking
-- embeddings and vector retrieval
-- a baseline RAG troubleshooting pipeline
-- OpenAPI inspection
-- log and incident analysis tools
-- a LangGraph-based agent
-- evidence synthesis and confidence scoring
-- FastAPI endpoints
-- evaluation, observability, Docker, and CI
+- API documentation
+- authentication and rate-limit guidance
+- error-code reference material
+- operational runbooks
+- historical incident records
+- request-correlated structured logs
+- an OpenAPI 3.1 specification
+
+No RAG framework has been introduced yet. Commit 3 will implement document ingestion and
+normalize this source material into application models.
+
+## Why use a deterministic sample environment?
+
+A controlled fictional service gives later evaluation code known answers. We can measure
+whether retrieval and agent behavior find the right evidence instead of relying on subjective
+demo questions.
+
+| Failure | Ground-truth signal |
+|---|---|
+| `400 malformed_request` | malformed JSON |
+| `401 invalid_token` | expired/invalid JWT |
+| `403 insufficient_scope` | missing OAuth scope |
+| `404 order_not_found` | unknown order ID |
+| `409 duplicate_idempotency_key` | key reused with another payload |
+| `422 schema_validation_failed` | request violates schema |
+| `429 rate_limit_exceeded` | caller exceeded quota |
+| `500 database_unavailable` | database failure |
+| `502 payment_dependency_failed` | Payment Service failed |
+| `503 service_unavailable` | dependency/service saturation |
+| `504 payment_timeout` | payment call exceeded timeout |
 
 ## Requirements
 
-- Python 3.11 or newer
+- Python 3.11+
 - `pip`
 - Git
 
 ## Setup
 
-Clone the repository and move into it:
-
-```bash
-git clone <your-repository-url>
-cd agentic-api-troubleshooter
-```
-
-Create and activate a virtual environment:
-
-### macOS / Linux
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### Windows PowerShell
-
-```powershell
-py -3.11 -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-Install the project and development dependencies:
-
-```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-Create your local environment file:
-
-### macOS / Linux
-
-```bash
 cp .env.example .env
-```
-
-### Windows PowerShell
-
-```powershell
-Copy-Item .env.example .env
 ```
 
 ## Run
@@ -82,7 +66,7 @@ Copy-Item .env.example .env
 python -m app.main
 ```
 
-Expected output will be similar to:
+Expected output is similar to:
 
 ```text
 INFO | __main__ | Starting Agentic API Troubleshooting Assistant
@@ -90,53 +74,62 @@ INFO | __main__ | Environment: development
 INFO | __main__ | Project initialization completed successfully.
 ```
 
-Timestamps will also appear in the log output.
-
 ## Code quality
-
-Run the linter:
 
 ```bash
 ruff check .
-```
-
-Run tests:
-
-```bash
 pytest
 ```
 
-At this stage there are no functional tests yet; those will be added as the project gains
-behavior worth testing.
+Commit 2 adds sample knowledge-base content only, so Commit 1 application behavior remains
+unchanged.
 
-## Project structure
+## Knowledge-base structure
 
 ```text
-agentic-api-troubleshooter/
-├── app/
-│   ├── __init__.py
-│   ├── config.py
-│   └── main.py
-├── data/
-│   ├── docs/
-│   ├── incidents/
-│   ├── logs/
-│   ├── openapi/
-│   └── runbooks/
-├── scripts/
-├── tests/
-│   └── __init__.py
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-├── README.md
-└── requirements.txt
+data/
+├── docs/
+│   ├── authentication.md
+│   ├── error_codes.md
+│   ├── orders_api.md
+│   └── rate_limits.md
+├── incidents/
+│   └── known_incidents.json
+├── logs/
+│   └── order_service.jsonl
+├── openapi/
+│   └── order-service.yaml
+└── runbooks/
+    ├── authentication_failures.md
+    ├── downstream_timeouts.md
+    ├── order_creation_failures.md
+    └── service_unavailable.md
 ```
 
-The empty `data/` and `scripts/` directories are placeholders for upcoming commits.
+## Known request IDs
+
+| Request ID | Expected diagnosis |
+|---|---|
+| `req-auth-401` | expired JWT |
+| `req-scope-403` | missing `orders:write` |
+| `req-json-400` | malformed JSON |
+| `req-schema-422` | invalid item quantity |
+| `req-idem-409` | idempotency conflict |
+| `req-rate-429` | rate limit exceeded |
+| `req-db-500` | database connection failure |
+| `req-pay-502` | Payment Service returned 500 |
+| `req-pay-504` | Payment Service exceeded 3000 ms timeout |
+| `req-pool-503` | database connection pool exhausted |
+| `req-notfound-404` | unknown order ID |
+
+## Planned progression
+
+Later commits will add document ingestion, chunking, embeddings, retrieval, baseline RAG,
+OpenAPI inspection, log/incident tools, LangGraph orchestration, evidence synthesis,
+FastAPI, evaluation, observability, Docker, and CI.
 
 ## Commit message
 
 ```text
-chore: initialize API troubleshooting assistant project
+feat: add sample order service API and troubleshooting knowledge base
 ```

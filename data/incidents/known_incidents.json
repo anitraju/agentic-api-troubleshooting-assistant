@@ -1,0 +1,111 @@
+{
+  "service": "order-service",
+  "description": "Historical incidents for the deterministic troubleshooting environment.",
+  "incidents": [
+    {
+      "incident_id": "INC-2026-001",
+      "title": "Expired service-account token caused order creation failures",
+      "date": "2026-01-18",
+      "status": "resolved",
+      "symptoms": [
+        "401",
+        "invalid_token",
+        "token_expired"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "A batch client continued using an expired OAuth access token.",
+      "resolution": "The client refreshed the token and added proactive renewal.",
+      "signatures": [
+        "token_expired",
+        "jwt_validation_failed"
+      ]
+    },
+    {
+      "incident_id": "INC-2026-004",
+      "title": "Deployment lost orders:write scope",
+      "date": "2026-02-09",
+      "status": "resolved",
+      "symptoms": [
+        "403",
+        "insufficient_scope"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "OAuth client configuration omitted orders:write.",
+      "resolution": "The client configuration was corrected and new tokens were issued.",
+      "signatures": [
+        "missing_scope",
+        "orders:write"
+      ]
+    },
+    {
+      "incident_id": "INC-2026-007",
+      "title": "Payment Service degradation caused gateway failures",
+      "date": "2026-03-22",
+      "status": "resolved",
+      "symptoms": [
+        "502",
+        "payment_dependency_failed"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "Payment Service returned HTTP 500 during authorization.",
+      "resolution": "Payment Service rolled back a faulty release.",
+      "signatures": [
+        "payment_service_status_500",
+        "payment_dependency_failed"
+      ]
+    },
+    {
+      "incident_id": "INC-2026-010",
+      "title": "Payment authorization latency exceeded timeout",
+      "date": "2026-04-14",
+      "status": "resolved",
+      "symptoms": [
+        "504",
+        "payment_timeout",
+        "high downstream latency"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "Payment Service latency exceeded the 3000 ms timeout.",
+      "resolution": "A slow Payment Service database query was optimized.",
+      "signatures": [
+        "payment_timeout",
+        "elapsed_ms>3000"
+      ]
+    },
+    {
+      "incident_id": "INC-2026-014",
+      "title": "Database connection pool exhaustion",
+      "date": "2026-05-31",
+      "status": "resolved",
+      "symptoms": [
+        "503",
+        "service_unavailable",
+        "high latency"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "A connection leak exhausted the Order Service database pool.",
+      "resolution": "The leak was fixed and affected instances were recycled.",
+      "signatures": [
+        "db_pool_exhausted",
+        "available_connections=0"
+      ]
+    },
+    {
+      "incident_id": "INC-2026-018",
+      "title": "Retry storm triggered client rate limiting",
+      "date": "2026-07-07",
+      "status": "resolved",
+      "symptoms": [
+        "429",
+        "rate_limit_exceeded"
+      ],
+      "affected_endpoint": "POST /api/v1/orders",
+      "root_cause": "A client retried without backoff and exceeded its quota.",
+      "resolution": "The client implemented bounded backoff with jitter and honored Retry-After.",
+      "signatures": [
+        "rate_limit_exceeded",
+        "retry_storm"
+      ]
+    }
+  ]
+}
