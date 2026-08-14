@@ -2,6 +2,7 @@
 
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,19 @@ class Settings(BaseSettings):
     )
     app_env: str = Field(default="development", alias="APP_ENV")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    embedding_model_name: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        alias="EMBEDDING_MODEL_NAME",
+    )
+    embedding_batch_size: int = Field(default=32, ge=1, alias="EMBEDDING_BATCH_SIZE")
+
+    chroma_persist_dir: Path = Field(default=Path("chroma_db"), alias="CHROMA_PERSIST_DIR")
+    chroma_collection_name: str = Field(
+        default="order-service-knowledge",
+        alias="CHROMA_COLLECTION_NAME",
+    )
+    vector_upsert_batch_size: int = Field(default=64, ge=1, alias="VECTOR_UPSERT_BATCH_SIZE")
 
     model_config = SettingsConfigDict(
         env_file=".env",
