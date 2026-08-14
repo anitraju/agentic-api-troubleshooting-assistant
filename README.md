@@ -6,130 +6,160 @@ workflow.
 
 ## Current status
 
-**Commit 2 — Sample Order Service troubleshooting environment**
+**Commit 3 — Knowledge-base document loaders**
 
-The repository now contains a deterministic fictional Order Service environment that will
-serve as the knowledge base and ground-truth dataset for later RAG and agentic commits.
+The project now has an ingestion layer that converts the heterogeneous troubleshooting
+knowledge base into a common `KnowledgeDocument` representation.
 
-The sample data includes:
+Supported RAG knowledge sources:
 
-- API documentation
-- authentication and rate-limit guidance
-- error-code reference material
-- operational runbooks
-- historical incident records
-- request-correlated structured logs
-- an OpenAPI 3.1 specification
+- Markdown API documentation
+- Markdown operational runbooks
+- historical incidents stored as JSON
+- the Order Service OpenAPI YAML specification
 
-No RAG framework has been introduced yet. Commit 3 will implement document ingestion and
-normalize this source material into application models.
+Structured request logs are intentionally **not** loaded into the RAG knowledge base. They
+are request-specific operational evidence and will later be accessed through a dedicated
+log-search tool.
 
-## Why use a deterministic sample environment?
+## Ingestion model
 
-A controlled fictional service gives later evaluation code known answers. We can measure
-whether retrieval and agent behavior find the right evidence instead of relying on subjective
-demo questions.
+Every loaded source is normalized to:
 
-| Failure | Ground-truth signal |
-|---|---|
-| `400 malformed_request` | malformed JSON |
-| `401 invalid_token` | expired/invalid JWT |
-| `403 insufficient_scope` | missing OAuth scope |
-| `404 order_not_found` | unknown order ID |
-| `409 duplicate_idempotency_key` | key reused with another payload |
-| `422 schema_validation_failed` | request violates schema |
-| `429 rate_limit_exceeded` | caller exceeded quota |
-| `500 database_unavailable` | database failure |
-| `502 payment_dependency_failed` | Payment Service failed |
-| `503 service_unavailable` | dependency/service saturation |
-| `504 payment_timeout` | payment call exceeded timeout |
+```python
+KnowledgeDocument(
+    content="...",
+    source="...",
+    source_type=SourceType.DOCUMENTATION,
+    metadata={...},
+)
+```
+
+The source types are:
+
+- `documentation`
+- `runbook`
+- `incident`
+- `openapi`
+
+Historical incident records are loaded as independent documents, which makes it possible
+for retrieval to return one specific known incident rather than the entire incident file.
+
+## Current knowledge-base counts
+
+The controlled sample environment produces:
+
+| Source type | Documents |
+|---|---:|
+| Documentation | 4 |
+| Runbooks | 4 |
+| Historical incidents | 6 |
+| OpenAPI specifications | 1 |
+| **Total** | **15** |
+
+## Project structure
+
+```text
+app/
+└── ingestion/
+    ├── __init__.py
+    ├── loaders.py
+    └── models.py
+
+scripts/
+└── inspect_knowledge_base.py
+
+tests/
+└── test_ingestion.py
+```
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.11 or newer
 - `pip`
 - Git
 
-## Setup
+Commit 3 introduces `PyYAML` for safe OpenAPI YAML parsing.
+
+## Install or update dependencies
+
+With the virtual environment active:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-## Run
+Because `requirements.txt` installs the project in editable mode, the new `PyYAML`
+dependency declared in `pyproject.toml` will be installed automatically.
+
+## Run the application
 
 ```bash
 python -m app.main
 ```
 
-Expected output is similar to:
+## Inspect the ingestion pipeline
 
-```text
-INFO | __main__ | Starting Agentic API Troubleshooting Assistant
-INFO | __main__ | Environment: development
-INFO | __main__ | Project initialization completed successfully.
+```bash
+python -m scripts.inspect_knowledge_base
 ```
 
-## Code quality
+Expected output:
+
+```text
+Loaded 15 knowledge documents
+- documentation: 4
+- incident: 6
+- openapi: 1
+- runbook: 4
+```
+
+It will also print every normalized source.
+
+## Validate
 
 ```bash
 ruff check .
 pytest
 ```
 
-Commit 2 adds sample knowledge-base content only, so Commit 1 application behavior remains
-unchanged.
+The ingestion tests verify:
 
-## Knowledge-base structure
+- Markdown title and metadata extraction
+- one-document-per-incident normalization
+- malformed incident structure handling
+- OpenAPI metadata parsing
+- expected full-repository knowledge counts
+- exclusion of structured request logs from the RAG corpus
+
+## Why logs are excluded from RAG ingestion
+
+API documentation, runbooks, and historical incidents are relatively stable knowledge.
+Request logs are dynamic evidence tied to a specific troubleshooting investigation.
+
+Keeping these concerns separate allows the final agent to combine:
 
 ```text
-data/
-├── docs/
-│   ├── authentication.md
-│   ├── error_codes.md
-│   ├── orders_api.md
-│   └── rate_limits.md
-├── incidents/
-│   └── known_incidents.json
-├── logs/
-│   └── order_service.jsonl
-├── openapi/
-│   └── order-service.yaml
-└── runbooks/
-    ├── authentication_failures.md
-    ├── downstream_timeouts.md
-    ├── order_creation_failures.md
-    └── service_unavailable.md
+retrieved knowledge
+        +
+request-specific log evidence
+        +
+OpenAPI inspection
+        +
+historical incident lookup
+        ↓
+evidence-based diagnosis
 ```
 
-## Known request IDs
+rather than embedding every operational log line into the knowledge vector store.
 
-| Request ID | Expected diagnosis |
-|---|---|
-| `req-auth-401` | expired JWT |
-| `req-scope-403` | missing `orders:write` |
-| `req-json-400` | malformed JSON |
-| `req-schema-422` | invalid item quantity |
-| `req-idem-409` | idempotency conflict |
-| `req-rate-429` | rate limit exceeded |
-| `req-db-500` | database connection failure |
-| `req-pay-502` | Payment Service returned 500 |
-| `req-pay-504` | Payment Service exceeded 3000 ms timeout |
-| `req-pool-503` | database connection pool exhausted |
-| `req-notfound-404` | unknown order ID |
+## Next commit
 
-## Planned progression
-
-Later commits will add document ingestion, chunking, embeddings, retrieval, baseline RAG,
-OpenAPI inspection, log/incident tools, LangGraph orchestration, evidence synthesis,
-FastAPI, evaluation, observability, Docker, and CI.
+Commit 4 will add metadata-aware chunking so long documents can be split into retrieval
+units without losing source, section, endpoint, HTTP status, and other useful context.
 
 ## Commit message
 
 ```text
-feat: add sample order service API and troubleshooting knowledge base
+feat: implement knowledge base document loaders
 ```
