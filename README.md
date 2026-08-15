@@ -6,212 +6,127 @@ workflow.
 
 ## Current status
 
-**Commit 6 — Metadata-aware semantic retrieval with source attribution**
+**Commit 7 — Baseline grounded RAG troubleshooting pipeline**
 
-The project can now turn a natural-language troubleshooting question into a query embedding,
-search the persistent Chroma knowledge index, apply structured metadata filters, and return
-ranked retrieval results with source attribution that later RAG and agent stages can cite.
-
-The retrieval flow is:
+The project can now retrieve relevant technical evidence and turn it into a structured,
+evidence-grounded troubleshooting diagnosis using an OpenAI chat model through LangChain.
 
 ```text
 User troubleshooting query
           ↓
-SentenceTransformerEmbedder.embed_query(...)
+SemanticRetriever
           ↓
-Normalized query embedding
+Ranked RetrievalResult evidence
           ↓
-Optional metadata filters
+Grounded prompt context
           ↓
-Persistent Chroma collection
+ChatOpenAI structured output
           ↓
-Nearest-neighbor ranking
+Grounding validation
           ↓
-VectorSearchHit
-          ↓
-RetrievalResult
-          ↓
-Citation-ready context for later RAG stages
+TroubleshootingAnswer + citations
 ```
 
-## Retrieval design
+## Grounding design
 
-The retrieval layer stays separated from Chroma-specific storage details.
+The LLM does not receive an unrestricted system description. It receives only the user query
+and the ranked evidence returned by Commit 6.
 
-`VectorSearcher` is the small nearest-neighbor search contract consumed by the high-level
-retriever. `ChromaVectorStore` implements that contract and returns `VectorSearchHit` objects.
+Every generated likely cause, diagnostic step, and remediation step must provide one or more
+`evidence_ranks`. The pipeline validates those ranks against the evidence actually retrieved.
+A generated statement that cites a non-existent rank raises `UngroundedGenerationError`.
 
-`SemanticRetriever` is responsible for:
+If retrieval returns no evidence, the pipeline does not call the LLM. It returns a low-confidence
+response that explicitly says a grounded diagnosis cannot be made.
 
-- validating the user query and result limit;
-- creating the query embedding through the existing `Embedder` abstraction;
-- converting troubleshooting filters into a Chroma `where` expression;
-- requesting nearest-neighbor results from the vector store;
-- converting stored source metadata into typed, citation-ready `RetrievalResult` objects.
+## Structured output
 
-This keeps later RAG and LangGraph code independent of Chroma's raw query-result structure.
-
-## Retrieval result model
-
-Each `RetrievalResult` contains:
+The generation schema contains:
 
 ```text
-rank
-chunk_id
-content
-source
-source_type
-distance
-metadata
-citation
+summary
+likely_causes[]
+  text
+  evidence_ranks[]
+diagnostic_steps[]
+  text
+  evidence_ranks[]
+remediation_steps[]
+  text
+  evidence_ranks[]
+confidence
+limitations[]
 ```
 
-`source` and `source_type` are promoted out of raw vector-store metadata so that downstream
-reasoning code cannot accidentally lose source attribution.
+The final `TroubleshootingAnswer` also carries the exact `RetrievalResult` objects used to
+produce the diagnosis, allowing citations to be rendered deterministically.
 
-The computed `citation` field produces a compact label such as:
+## LLM integration
 
-```text
-[1] docs/authentication.md — Expired access tokens
-```
+Commit 7 introduces `langchain-openai` and uses `ChatOpenAI.with_structured_output(...)` with
+a Pydantic schema. Tests use fakes and never call the OpenAI API.
 
-The retrieval layer keeps Chroma's distance value rather than inventing a provider-specific
-similarity score. Lower distance means the result was ranked closer to the query.
-
-## Metadata-aware retrieval
-
-`RetrievalFilters` supports the troubleshooting signals already created during ingestion and
-chunking:
-
-```text
-source_types
-service
-endpoint
-http_method
-status_code
-metadata
-```
-
-`metadata` can contain additional scalar equality filters when a later workflow needs a field
-that is not yet modeled explicitly.
-
-Multiple filters are combined with Chroma's `$and` expression. Multiple source types use
-`$in`.
-
-Examples of useful retrieval constraints include:
-
-```text
-source_type = runbook
-service = order-service
-endpoint = /orders
-http_method = POST
-status_code = 503
-```
-
-Semantic ranking still happens inside the filtered candidate set.
+The OpenAI HTTP client uses the operating-system trust store through `truststore`, matching the
+certificate strategy already used for Hugging Face model downloads on managed machines.
 
 ## Configuration
 
-Commit 6 adds one retrieval setting:
+Add these values to your local `.env`:
 
 ```text
-RETRIEVAL_TOP_K=5
+OPENAI_API_KEY=<your API key>
+OPENAI_MODEL=gpt-5-nano
+LLM_TIMEOUT_SECONDS=60
+LLM_MAX_RETRIES=2
 ```
 
-The complete retrieval/index configuration is now:
+Do not commit your real API key. `.env` remains local.
 
-```text
-EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-EMBEDDING_BATCH_SIZE=32
-CHROMA_PERSIST_DIR=chroma_db
-CHROMA_COLLECTION_NAME=order-service-knowledge
-VECTOR_UPSERT_BATCH_SIZE=64
-RETRIEVAL_TOP_K=5
+## Install dependencies
+
+```bash
+pip install -e ".[dev]"
 ```
 
-Copy any new value you want from `.env.example` into your local `.env`. The default also works
-without explicitly adding it.
-
-## Build the index
-
-Commit 6 reads the persistent index created in Commit 5, so build or rebuild it first whenever
-knowledge or chunking changes:
+## Build or verify the knowledge index
 
 ```bash
 python -m scripts.build_index
 ```
 
-With the current sample knowledge base, the index should contain 61 chunks.
+The current sample knowledge base should still contain 61 chunks.
 
-## Query the index
-
-A small CLI is included for manual retrieval checks.
-
-Basic semantic search:
+## Run the baseline RAG assistant
 
 ```bash
-python -m scripts.query_index "Why am I getting 401 when calling the order API?"
+python -m scripts.troubleshoot \
+  "Why am I getting 401 when calling the order API?"
 ```
 
-Return only three results:
+You can reuse the Commit 6 metadata filters:
 
 ```bash
-python -m scripts.query_index \
-  "Why is order creation returning 503?" \
-  --top-k 3
-```
-
-Restrict the candidate set to runbooks:
-
-```bash
-python -m scripts.query_index \
-  "How should I troubleshoot expired authentication tokens?" \
-  --source-type runbook
-```
-
-Combine API metadata filters:
-
-```bash
-python -m scripts.query_index \
-  "Order creation is failing" \
+python -m scripts.troubleshoot \
+  "Order creation is returning service unavailable" \
   --service order-service \
-  --endpoint /orders \
   --http-method POST \
   --status-code 503
 ```
 
-Multiple source types can be supplied by repeating the option:
-
-```bash
-python -m scripts.query_index \
-  "Find evidence for a database pool outage" \
-  --source-type runbook \
-  --source-type incident
-```
+The rendered answer contains a diagnosis, confidence level, evidence-backed causes, diagnostic
+steps, remediation, limitations when needed, and the retrieved sources.
 
 ## Tests
-
-The test suite continues to avoid Sentence Transformer downloads by using deterministic or
-fixed in-memory test embedders.
-
-Run:
 
 ```bash
 ruff check .
 pytest
 ```
 
-Commit 6 tests cover:
-
-- nearest-neighbor vector queries;
-- ranked hit conversion;
-- metadata filtering;
-- multiple source-type filters;
-- query and top-k validation;
-- empty collections;
-- source and source-type attribution;
-- citation generation;
-- custom scalar metadata filters.
+Commit 7 tests do not require an OpenAI API key. They cover structured answer validation,
+evidence-context formatting, citation rendering, retrieve-then-generate orchestration,
+empty-retrieval fallback behavior, filter forwarding, and rejection of ungrounded evidence
+references.
 
 ## Files added or changed
 
@@ -220,37 +135,36 @@ app/
 ├── config.py
 └── rag/
     ├── __init__.py
-    ├── retrieval.py
-    └── vector_store.py
+    ├── answers.py
+    ├── generation.py
+    └── pipeline.py
 
 scripts/
-└── query_index.py
+└── troubleshoot.py
 
 tests/
-├── test_retrieval.py
-└── test_vector_store.py
+├── test_answers.py
+├── test_generation.py
+└── test_pipeline.py
 
 .env.example
+pyproject.toml
 README.md
 ```
 
-No new third-party dependency is required for this commit.
-
 ## Architecture boundary
 
-Commit 6 is responsible for **retrieving evidence**.
-
-It deliberately does not yet generate a troubleshooting answer, call an LLM, inspect live logs,
-or introduce LangGraph orchestration. The output of this commit is a ranked collection of
-source-attributed evidence that those later stages can consume.
+Commit 7 is a deterministic **retrieve → generate → validate** RAG pipeline. It intentionally
+does not yet make autonomous decisions, branch between workflows, call diagnostic tools, retry
+failed reasoning, or maintain agent state.
 
 ## Next commit
 
-Commit 7 will build the baseline RAG troubleshooting pipeline on top of these retrieval results,
-so the system can turn retrieved evidence into a grounded diagnosis and remediation response.
+Commit 8 will introduce LangGraph orchestration with explicit troubleshooting state and nodes
+for classification, retrieval, diagnosis, and verification.
 
 ## Commit message
 
 ```text
-add metadata-aware semantic retrieval
+feat: add grounded RAG troubleshooting pipeline
 ```
