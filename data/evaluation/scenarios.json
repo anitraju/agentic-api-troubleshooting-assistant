@@ -1,0 +1,112 @@
+{
+  "description": "Curated API troubleshooting evaluation scenarios for Commit 9.",
+  "cases": [
+    {
+      "case_id": "auth-401-invalid-token",
+      "query": "GET /api/v1/orders/123 returns 401. What should I check?",
+      "expected_category": "authentication",
+      "expected_status_code": 401,
+      "expected_http_method": "GET",
+      "expected_endpoint": "/api/v1/orders/123",
+      "expected_source_hints": [
+        "authentication.md",
+        "order-service.yaml"
+      ],
+      "expected_answer_terms": [
+        "token",
+        "401"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.75
+    },
+    {
+      "case_id": "authz-403-scope",
+      "query": "GET /api/v1/orders/123 returns 403 and says insufficient_scope.",
+      "expected_category": "authorization",
+      "expected_status_code": 403,
+      "expected_http_method": "GET",
+      "expected_endpoint": "/api/v1/orders/123",
+      "expected_source_hints": [
+        "authentication_failures.md",
+        "orders_api.md"
+      ],
+      "expected_answer_terms": [
+        "scope",
+        "orders:read"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.75
+    },
+    {
+      "case_id": "validation-400-create-order",
+      "query": "POST /api/v1/orders returns 400 for an invalid request body.",
+      "expected_category": "validation",
+      "expected_status_code": 400,
+      "expected_http_method": "POST",
+      "expected_endpoint": "/api/v1/orders",
+      "expected_source_hints": [
+        "orders_api.md",
+        "order-service.yaml"
+      ],
+      "expected_answer_terms": [
+        "request",
+        "400"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.7
+    },
+    {
+      "case_id": "not-found-404-order",
+      "query": "GET /api/v1/orders/missing-order returns 404.",
+      "expected_category": "not_found",
+      "expected_status_code": 404,
+      "expected_http_method": "GET",
+      "expected_endpoint": "/api/v1/orders/missing-order",
+      "expected_source_hints": [
+        "orders_api.md",
+        "order-service.yaml"
+      ],
+      "expected_answer_terms": [
+        "404",
+        "order"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.7
+    },
+    {
+      "case_id": "rate-limit-429",
+      "query": "The order API is returning 429 Too Many Requests. What should I investigate?",
+      "expected_category": "rate_limit",
+      "expected_status_code": 429,
+      "expected_source_hints": [
+        "orders_api.md",
+        "order-service.yaml"
+      ],
+      "expected_answer_terms": [
+        "429",
+        "rate"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.7
+    },
+    {
+      "case_id": "availability-503-create-order",
+      "query": "POST /api/v1/orders returns 503 Service Unavailable. What should I investigate?",
+      "expected_category": "service_availability",
+      "expected_status_code": 503,
+      "expected_http_method": "POST",
+      "expected_endpoint": "/api/v1/orders",
+      "expected_source_hints": [
+        "runbooks",
+        "incidents",
+        "order-service.yaml"
+      ],
+      "expected_answer_terms": [
+        "503",
+        "service"
+      ],
+      "top_k": 5,
+      "minimum_score": 0.7
+    }
+  ]
+}

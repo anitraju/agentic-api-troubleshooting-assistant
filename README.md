@@ -5,129 +5,198 @@ Sentence Transformers, Chroma, LangChain, and OpenAI.
 
 ## Current status
 
-**Commit 8 — LangGraph agent orchestration**
+**Commit 9 — Repeatable agent evaluation framework**
 
-The project now contains a stateful four-node troubleshooting workflow:
+Commit 9 adds a curated evaluation dataset and deterministic code-based evaluators so changes
+to prompts, retrieval, classification, or graph routing can be measured instead of judged only
+from individual demos.
 
-```text
-START
-  |
-  v
-classify
-  |
-  v
-retrieve
-  |
-  +---- no evidence ----------------------+
-  |                                       |
-  v                                       v
-diagnose                              verify
-  |                                       |
-  v                                       |
-verify <---- grounding retry --------------+
-  |
-  v
- END
-```
-
-## Agent nodes
-
-### 1. classify
-
-The classifier converts the user's query into a structured `IssueClassification` with an issue
-category and only the service, endpoint, HTTP method, and status code that are explicit in the
-query.
-
-### 2. retrieve
-
-Classification-derived metadata is merged with any explicit CLI filters. Caller-provided
-filters take precedence. The existing semantic retriever then searches the persistent Chroma
-knowledge index.
-
-### 3. diagnose
-
-The existing grounded generator creates a structured diagnosis from retrieved evidence. Causes,
-diagnostic steps, and remediation steps must cite retrieved evidence ranks.
-
-### 4. verify
-
-The verifier checks every generated evidence rank. If grounding fails, LangGraph conditionally
-routes back to `diagnose` with corrective feedback. Retries are bounded by:
+The evaluation flow is:
 
 ```text
-AGENT_MAX_GENERATION_ATTEMPTS=2
+Curated scenario
+      |
+      v
+LangGraph troubleshooting agent
+      |
+      v
+Final graph state
+      |
+      +--> classification evaluator
+      +--> explicit-signal evaluator
+      +--> retrieval-source evaluator
+      +--> answer-term recall
+      +--> grounding evaluator
+      |
+      v
+Case score + pass/fail
+      |
+      v
+Aggregate evaluation report
 ```
 
-If all attempts fail, the graph returns a safe low-confidence response with sources but no
-unsupported diagnosis.
+## Evaluation dimensions
 
-If retrieval returns no evidence, generation is skipped entirely.
+Each case can define reference expectations for:
 
-## Run the LangGraph agent
+- issue category;
+- status code;
+- HTTP method;
+- endpoint;
+- service;
+- one or more expected source hints;
+- answer terms expected to appear in the grounded response.
 
-Install/update dependencies:
+The evaluator also verifies that every evidence citation in the final answer points to a rank
+that was actually retrieved.
 
-```bash
-pip install -e ".[dev]"
+Category accuracy and grounding are hard requirements. The remaining scores are averaged with
+those dimensions and compared with each case's `minimum_score`.
+
+## Curated dataset
+
+The initial dataset is:
+
+```text
+data/evaluation/scenarios.json
 ```
 
-Build the index if needed:
+It includes representative cases for:
 
-```bash
-python -m scripts.build_index
-```
+- 401 authentication;
+- 403 authorization / insufficient scope;
+- 400 request validation;
+- 404 order not found;
+- 429 rate limiting;
+- 503 service availability.
 
-Run:
+The cases are intentionally small and human-readable so they can evolve with the knowledge
+base.
 
-```bash
-python -m scripts.agent_troubleshoot \
-  "Why am I getting 401 when calling the order API?"
-```
+## Unit tests
 
-A more explicit failure:
-
-```bash
-python -m scripts.agent_troubleshoot \
-  "POST /api/v1/orders returns 503. What should I investigate?"
-```
-
-Explicit filters are still supported:
-
-```bash
-python -m scripts.agent_troubleshoot \
-  "Order creation is unavailable" \
-  --service order-service \
-  --endpoint /api/v1/orders \
-  --http-method POST \
-  --status-code 503
-```
-
-The CLI prints a compact trace followed by the grounded diagnosis.
-
-## Tests
+Evaluation unit tests are deterministic and do not call OpenAI or Hugging Face:
 
 ```bash
 ruff check .
 pytest
 ```
 
-Commit 8 tests cover classification normalization, metadata-filter merging, the four-node happy
-path, no-evidence routing, grounding retries, retry exhaustion, and caller-filter precedence.
+They cover:
 
-The agent tests use fakes and do not call OpenAI or Hugging Face.
+- evaluation-model normalization;
+- aggregate report metrics;
+- classification scoring;
+- retrieval-source scoring;
+- answer-term recall;
+- evidence-grounding checks;
+- runner exception isolation;
+- dataset validation.
+
+## Run a small live evaluation first
+
+A live evaluation uses the real LangGraph agent and therefore consumes OpenAI API credits.
+
+Start with two cases:
+
+```bash
+python -m scripts.evaluate_agent --limit 2
+```
+
+Example summary:
+
+```text
+## Agent evaluation
+
+Cases: 2
+Passed: 2
+Pass rate: 100.0%
+Average score: 0.950
+
+[PASS] auth-401-invalid-token score=1.000
+[PASS] authz-403-scope score=0.900
+```
+
+Because model output is non-deterministic, the exact score can vary between runs.
+
+## Run one named case
+
+```bash
+python -m scripts.evaluate_agent \
+  --case-id availability-503-create-order
+```
+
+Multiple `--case-id` options can be supplied.
+
+## Run the full curated dataset
+
+```bash
+python -m scripts.evaluate_agent
+```
+
+## Save a JSON report
+
+```bash
+python -m scripts.evaluate_agent \
+  --output reports/commit9-evaluation.json
+```
+
+The report contains per-case scores, failures, actual classification values, retrieved sources,
+confidence, and generation-attempt counts.
+
+## Optional CI-style failure
+
+By default, the evaluator prints failures without returning a failing shell status. To make the
+command exit with status `1` when any scenario fails:
+
+```bash
+python -m scripts.evaluate_agent --fail-on-regression
+```
+
+This is useful later in CI once thresholds are stable.
+
+## Architecture through Commit 9
+
+```text
+Knowledge documents
+      |
+      v
+Chunking + metadata
+      |
+      v
+Embeddings + Chroma
+      |
+      v
+Semantic retrieval
+      |
+      v
+Grounded RAG generation
+      |
+      v
+LangGraph
+classify -> retrieve -> diagnose -> verify
+      |
+      v
+Commit 9 evaluation harness
+dataset -> scorers -> report
+```
 
 ## Commit boundary
 
-Commit 8 is intentionally limited to four-node LangGraph orchestration. It does not add a UI,
-production-system tools, long-term memory, a checkpointer, or automatic remediation.
+Commit 9 does not add:
 
-## Next step
+- an LLM-as-judge evaluator;
+- LangSmith-hosted datasets;
+- production tracing dashboards;
+- a web UI;
+- production API/log tools;
+- automatic remediation.
 
-The next project stage can focus on evaluation and example scenarios: repeatable troubleshooting
-cases, retrieval/answer quality checks, and documented agent runs.
+The deterministic local eval layer is intentionally established first. A future enhancement can
+mirror the same cases into LangSmith for experiment tracking and LLM-as-judge evaluation.
 
 ## Commit message
 
 ```text
-add LangGraph troubleshooting agent orchestration
+add repeatable agent evaluation framework
 ```
