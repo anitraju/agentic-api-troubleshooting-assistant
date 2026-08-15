@@ -31,6 +31,7 @@ class TroubleshootingAgentState(TypedDict, total=False):
     classification: IssueClassification
     retrieval_filters: RetrievalFilters
     evidence: list[RetrievalResult]
+    retrieval_fallback_used: bool
     analysis: GeneratedTroubleshootingAnalysis | None
     answer: TroubleshootingAnswer
     generation_attempts: int
@@ -101,6 +102,7 @@ class TroubleshootingAgent:
                 "requested_filters": filters,
                 "generation_attempts": 0,
                 "grounding_error": None,
+                "retrieval_fallback_used": False,
             }
         )
         return TroubleshootingAgentState(**result)
@@ -147,12 +149,44 @@ class TroubleshootingAgent:
         }
 
     def _retrieve_node(self, state: TroubleshootingAgentState) -> dict:
+        """Retrieve with classifier-derived filters, then safely relax inferred filters.
+
+        Classifier-extracted endpoint/status/method/service values are useful retrieval hints,
+        but they can be more specific than the metadata stored in the knowledge index. For
+        example, a user may report `/api/v1/orders/123` while documentation is indexed under
+        `/api/v1/orders/{order_id}`.
+
+        We therefore try the merged filters first. If they return no evidence, we retry using
+        only filters explicitly supplied by the caller. Explicit caller constraints are never
+        discarded.
+        """
+        primary_filters = state["retrieval_filters"]
         evidence = self.retriever.retrieve(
             state["query"],
             top_k=state["top_k"],
-            filters=state["retrieval_filters"],
+            filters=primary_filters,
         )
-        return {"evidence": evidence}
+
+        fallback_used = False
+        requested_filters = state.get("requested_filters")
+        fallback_filters = (
+            requested_filters
+            if requested_filters is not None
+            else RetrievalFilters()
+        )
+
+        if not evidence and primary_filters != fallback_filters:
+            evidence = self.retriever.retrieve(
+                state["query"],
+                top_k=state["top_k"],
+                filters=fallback_filters,
+            )
+            fallback_used = True
+
+        return {
+            "evidence": evidence,
+            "retrieval_fallback_used": fallback_used,
+        }
 
     @staticmethod
     def _route_after_retrieval(

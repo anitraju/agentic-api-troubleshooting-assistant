@@ -104,6 +104,7 @@ def main() -> None:
     print(f"- Category: {classification.category.value}")
     print(f"- Summary: {classification.summary}")
     print(f"- Retrieved evidence: {len(evidence)}")
+    print(f"- Retrieval fallback used: {state.get('retrieval_fallback_used', False)}")
     print(f"- Generation attempts: {attempts}")
     print("- Workflow: classify -> retrieve -> diagnose -> verify")
     print()
