@@ -6,91 +6,119 @@ workflow.
 
 ## Current status
 
-**Commit 5 — Local embeddings and persistent Chroma vector index**
+**Commit 6 — Metadata-aware semantic retrieval with source attribution**
 
-The project can now convert metadata-aware `KnowledgeChunk` objects into normalized dense
-embeddings and persist them in a local Chroma collection.
+The project can now turn a natural-language troubleshooting question into a query embedding,
+search the persistent Chroma knowledge index, apply structured metadata filters, and return
+ranked retrieval results with source attribution that later RAG and agent stages can cite.
 
-The indexing flow is:
+The retrieval flow is:
 
 ```text
-Raw knowledge
-      ↓
-Document loaders
-      ↓
-KnowledgeDocument
-      ↓
-Metadata-aware chunking
-      ↓
-KnowledgeChunk
-      ↓
-Sentence Transformer
-      ↓
-Dense embedding
-      ↓
+User troubleshooting query
+          ↓
+SentenceTransformerEmbedder.embed_query(...)
+          ↓
+Normalized query embedding
+          ↓
+Optional metadata filters
+          ↓
 Persistent Chroma collection
+          ↓
+Nearest-neighbor ranking
+          ↓
+VectorSearchHit
+          ↓
+RetrievalResult
+          ↓
+Citation-ready context for later RAG stages
 ```
 
-## Embedding design
+## Retrieval design
 
-The application uses a small internal `Embedder` protocol instead of coupling the rest of
-the code directly to Sentence Transformers.
+The retrieval layer stays separated from Chroma-specific storage details.
 
-The production implementation is:
+`VectorSearcher` is the small nearest-neighbor search contract consumed by the high-level
+retriever. `ChromaVectorStore` implements that contract and returns `VectorSearchHit` objects.
+
+`SemanticRetriever` is responsible for:
+
+- validating the user query and result limit;
+- creating the query embedding through the existing `Embedder` abstraction;
+- converting troubleshooting filters into a Chroma `where` expression;
+- requesting nearest-neighbor results from the vector store;
+- converting stored source metadata into typed, citation-ready `RetrievalResult` objects.
+
+This keeps later RAG and LangGraph code independent of Chroma's raw query-result structure.
+
+## Retrieval result model
+
+Each `RetrievalResult` contains:
 
 ```text
-SentenceTransformerEmbedder
+rank
+chunk_id
+content
+source
+source_type
+distance
+metadata
+citation
 ```
 
-Default model:
+`source` and `source_type` are promoted out of raw vector-store metadata so that downstream
+reasoning code cannot accidentally lose source attribution.
+
+The computed `citation` field produces a compact label such as:
 
 ```text
-sentence-transformers/all-MiniLM-L6-v2
+[1] docs/authentication.md — Expired access tokens
 ```
 
-Embeddings are normalized before storage.
+The retrieval layer keeps Chroma's distance value rather than inventing a provider-specific
+similarity score. Lower distance means the result was ranked closer to the query.
 
-This abstraction will also let later code replace the local model with another embedding
-provider without changing the vector-store interface.
+## Metadata-aware retrieval
 
-## Persistent vector store
-
-`ChromaVectorStore` uses a local Chroma persistent client.
-
-The default index is stored under:
+`RetrievalFilters` supports the troubleshooting signals already created during ingestion and
+chunking:
 
 ```text
-chroma_db/
+source_types
+service
+endpoint
+http_method
+status_code
+metadata
 ```
 
-This directory is already ignored by Git.
+`metadata` can contain additional scalar equality filters when a later workflow needs a field
+that is not yet modeled explicitly.
 
-The collection name defaults to:
+Multiple filters are combined with Chroma's `$and` expression. Multiple source types use
+`$in`.
+
+Examples of useful retrieval constraints include:
 
 ```text
-order-service-knowledge
+source_type = runbook
+service = order-service
+endpoint = /orders
+http_method = POST
+status_code = 503
 ```
 
-Index writes use `upsert`, making repeated indexing safe for deterministic chunk IDs.
-
-## Metadata compatibility
-
-Knowledge chunks can contain useful non-scalar metadata such as historical-incident
-symptoms or signatures.
-
-Before metadata is written to Chroma:
-
-- strings, integers, floats, and booleans are preserved;
-- `None` values are omitted;
-- lists and dictionaries are serialized to deterministic JSON strings;
-- `source` and `source_type` are always added.
-
-This keeps the vector database representation stable while retaining troubleshooting
-context.
+Semantic ranking still happens inside the filtered candidate set.
 
 ## Configuration
 
-Commit 5 adds:
+Commit 6 adds one retrieval setting:
+
+```text
+RETRIEVAL_TOP_K=5
+```
+
+The complete retrieval/index configuration is now:
 
 ```text
 EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
@@ -98,52 +126,73 @@ EMBEDDING_BATCH_SIZE=32
 CHROMA_PERSIST_DIR=chroma_db
 CHROMA_COLLECTION_NAME=order-service-knowledge
 VECTOR_UPSERT_BATCH_SIZE=64
+RETRIEVAL_TOP_K=5
 ```
 
-Copy any new values you want from `.env.example` into your local `.env`. Existing defaults
-also work without explicitly adding them.
-
-## Install dependencies
-
-Commit 5 introduces:
-
-- `sentence-transformers`
-- `chromadb`
-
-Update the active virtual environment with:
-
-```bash
-pip install -r requirements.txt
-```
-
-The first real index build may download the configured Sentence Transformer model if it is
-not already present in the local model cache.
+Copy any new value you want from `.env.example` into your local `.env`. The default also works
+without explicitly adding it.
 
 ## Build the index
+
+Commit 6 reads the persistent index created in Commit 5, so build or rebuild it first whenever
+knowledge or chunking changes:
 
 ```bash
 python -m scripts.build_index
 ```
 
-With the current sample knowledge base, the summary should include:
+With the current sample knowledge base, the index should contain 61 chunks.
 
-```text
-Loaded 15 knowledge documents
-Created 61 retrieval chunks
-Indexed 61 chunks
-Collection count: 61
-Collection: order-service-knowledge
-Persistence directory: chroma_db
-Embedding model: sentence-transformers/all-MiniLM-L6-v2
+## Query the index
+
+A small CLI is included for manual retrieval checks.
+
+Basic semantic search:
+
+```bash
+python -m scripts.query_index "Why am I getting 401 when calling the order API?"
 ```
 
-The build script deliberately performs a clean collection reset before indexing. This makes
-local development reproducible when chunking or source data changes.
+Return only three results:
+
+```bash
+python -m scripts.query_index \
+  "Why is order creation returning 503?" \
+  --top-k 3
+```
+
+Restrict the candidate set to runbooks:
+
+```bash
+python -m scripts.query_index \
+  "How should I troubleshoot expired authentication tokens?" \
+  --source-type runbook
+```
+
+Combine API metadata filters:
+
+```bash
+python -m scripts.query_index \
+  "Order creation is failing" \
+  --service order-service \
+  --endpoint /orders \
+  --http-method POST \
+  --status-code 503
+```
+
+Multiple source types can be supplied by repeating the option:
+
+```bash
+python -m scripts.query_index \
+  "Find evidence for a database pool outage" \
+  --source-type runbook \
+  --source-type incident
+```
 
 ## Tests
 
-Vector-store tests use a deterministic in-memory test embedder instead of downloading an ML
-model. This keeps the test suite fast and repeatable.
+The test suite continues to avoid Sentence Transformer downloads by using deterministic or
+fixed in-memory test embedders.
 
 Run:
 
@@ -152,15 +201,17 @@ ruff check .
 pytest
 ```
 
-Commit 5 tests cover:
+Commit 6 tests cover:
 
-- embedding input validation
-- lazy model loading behavior
-- Chroma persistence across store instances
-- idempotent upserts
-- metadata sanitization
-- collection reset
-- invalid embedding output handling
+- nearest-neighbor vector queries;
+- ranked hit conversion;
+- metadata filtering;
+- multiple source-type filters;
+- query and top-k validation;
+- empty collections;
+- source and source-type attribution;
+- citation generation;
+- custom scalar metadata filters.
 
 ## Files added or changed
 
@@ -169,36 +220,37 @@ app/
 ├── config.py
 └── rag/
     ├── __init__.py
-    ├── embeddings.py
+    ├── retrieval.py
     └── vector_store.py
 
 scripts/
-└── build_index.py
+└── query_index.py
 
 tests/
-├── test_embeddings.py
+├── test_retrieval.py
 └── test_vector_store.py
 
 .env.example
-pyproject.toml
 README.md
 ```
 
+No new third-party dependency is required for this commit.
+
 ## Architecture boundary
 
-Commit 5 is responsible for **index construction and persistence**.
+Commit 6 is responsible for **retrieving evidence**.
 
-It does not yet implement semantic retrieval. Query embedding, nearest-neighbor retrieval,
-metadata filters, ranking, and citation-ready results are intentionally reserved for
-Commit 6.
+It deliberately does not yet generate a troubleshooting answer, call an LLM, inspect live logs,
+or introduce LangGraph orchestration. The output of this commit is a ranked collection of
+source-attributed evidence that those later stages can consume.
 
 ## Next commit
 
-Commit 6 will implement metadata-aware semantic retrieval with source attribution and
-retrieval result models.
+Commit 7 will build the baseline RAG troubleshooting pipeline on top of these retrieval results,
+so the system can turn retrieved evidence into a grounded diagnosis and remediation response.
 
 ## Commit message
 
 ```text
-feat: add Chroma vector store and knowledge indexing
+add metadata-aware semantic retrieval
 ```

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         alias="CHROMA_COLLECTION_NAME",
     )
     vector_upsert_batch_size: int = Field(default=64, ge=1, alias="VECTOR_UPSERT_BATCH_SIZE")
+    retrieval_top_k: int = Field(default=5, ge=1, alias="RETRIEVAL_TOP_K")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -49,7 +50,6 @@ def get_settings() -> Settings:
 def configure_logging(log_level: str) -> None:
     """Configure application-wide console logging."""
     level = getattr(logging, log_level.upper(), logging.INFO)
-
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

@@ -56,8 +56,30 @@ class SentenceTransformerEmbedder:
     def _get_model(self):
         """Load the model lazily so importing the application remains lightweight."""
         if self._model is None:
+            _configure_hugging_face_http_client()
+
             from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self.model_name)
 
         return self._model
+
+
+def _configure_hugging_face_http_client() -> None:
+    """Use the host operating-system trust store for Hugging Face HTTPS requests."""
+    import ssl
+
+    import httpx
+    import truststore
+    from huggingface_hub import close_session, set_client_factory
+
+    def client_factory() -> httpx.Client:
+        ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return httpx.Client(
+            verify=ssl_context,
+            timeout=120.0,
+            follow_redirects=True,
+        )
+
+    set_client_factory(client_factory)
+    close_session()
