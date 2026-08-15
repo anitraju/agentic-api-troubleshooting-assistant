@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import chromadb
 
@@ -13,8 +14,31 @@ from app.ingestion.models import KnowledgeChunk
 from app.rag.embeddings import Embedder
 
 
+@dataclass(frozen=True, slots=True)
+class VectorSearchHit:
+    """One ranked record returned by the vector store."""
+
+    chunk_id: str
+    document: str
+    metadata: dict[str, Any]
+    distance: float
+
+
+class VectorSearcher(Protocol):
+    """Minimal nearest-neighbor search contract used by the retrieval layer."""
+
+    def query(
+        self,
+        query_embedding: Sequence[float],
+        *,
+        n_results: int = 5,
+        where: dict[str, Any] | None = None,
+    ) -> list[VectorSearchHit]:
+        """Return ranked vector-search hits."""
+
+
 class ChromaVectorStore:
-    """Persist and manage retrieval chunks in a local Chroma collection."""
+    """Persist, manage, and query retrieval chunks in a local Chroma collection."""
 
     def __init__(
         self,
@@ -26,7 +50,6 @@ class ChromaVectorStore:
 
         self.persist_dir = Path(persist_dir)
         self.collection_name = collection_name
-
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(self.persist_dir))
         self._collection = self._client.get_or_create_collection(name=collection_name)
@@ -51,7 +74,6 @@ class ChromaVectorStore:
             return 0
 
         indexed = 0
-
         for start in range(0, len(chunk_list), batch_size):
             batch = chunk_list[start : start + batch_size]
             documents = [chunk.content for chunk in batch]
@@ -78,6 +100,59 @@ class ChromaVectorStore:
 
         return indexed
 
+    def query(
+        self,
+        query_embedding: Sequence[float],
+        *,
+        n_results: int = 5,
+        where: dict[str, Any] | None = None,
+    ) -> list[VectorSearchHit]:
+        """Return nearest-neighbor records for one pre-computed query embedding."""
+        if n_results < 1:
+            raise ValueError("n_results must be at least 1")
+        if len(query_embedding) == 0:
+            raise ValueError("query_embedding cannot be empty")
+        if self.count() == 0:
+            return []
+
+        result = self._collection.query(
+            query_embeddings=[list(query_embedding)],
+            n_results=n_results,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+
+        ids = _first_query_result(result.get("ids"))
+        documents = _first_query_result(result.get("documents"))
+        metadatas = _first_query_result(result.get("metadatas"))
+        distances = _first_query_result(result.get("distances"))
+
+        hits: list[VectorSearchHit] = []
+        for index, chunk_id in enumerate(ids):
+            document = _required_result_value(documents, index, "document")
+            metadata = _required_result_value(metadatas, index, "metadata")
+            distance = _required_result_value(distances, index, "distance")
+
+            if not isinstance(document, str):
+                raise ValueError("Chroma returned a non-string document")
+            if not isinstance(metadata, dict):
+                raise ValueError("Chroma returned invalid metadata")
+            try:
+                numeric_distance = float(distance)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Chroma returned an invalid distance") from exc
+
+            hits.append(
+                VectorSearchHit(
+                    chunk_id=str(chunk_id),
+                    document=document,
+                    metadata=dict(metadata),
+                    distance=numeric_distance,
+                )
+            )
+
+        return hits
+
     def count(self) -> int:
         """Return the number of records in the current collection."""
         return self._collection.count()
@@ -100,12 +175,24 @@ class ChromaVectorStore:
 
         documents = result.get("documents") or []
         metadatas = result.get("metadatas") or []
-
         return {
             "id": ids[0],
             "document": documents[0] if documents else None,
             "metadata": metadatas[0] if metadatas else {},
         }
+
+
+def _first_query_result(value: Any) -> list[Any]:
+    if not value:
+        return []
+    first = value[0]
+    return list(first) if first is not None else []
+
+
+def _required_result_value(values: list[Any], index: int, field_name: str) -> Any:
+    if index >= len(values) or values[index] is None:
+        raise ValueError(f"Chroma query result is missing {field_name} data")
+    return values[index]
 
 
 def _build_chroma_metadata(chunk: KnowledgeChunk) -> dict[str, str | int | float | bool]:
@@ -115,7 +202,6 @@ def _build_chroma_metadata(chunk: KnowledgeChunk) -> dict[str, str | int | float
         "source": chunk.source,
         "source_type": chunk.source_type.value,
     }
-
     sanitized: dict[str, str | int | float | bool] = {}
 
     for key, value in raw_metadata.items():
