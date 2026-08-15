@@ -1,256 +1,133 @@
 # Agentic API Troubleshooting Assistant Using RAG
 
-A portfolio project for building an AI assistant that investigates API failures using
-retrieval-augmented generation (RAG), structured troubleshooting tools, and an agentic
-workflow.
+An evidence-grounded API troubleshooting assistant built with Python, LangGraph, RAG,
+Sentence Transformers, Chroma, LangChain, and OpenAI.
 
 ## Current status
 
-**Commit 6 — Metadata-aware semantic retrieval with source attribution**
+**Commit 8 — LangGraph agent orchestration**
 
-The project can now turn a natural-language troubleshooting question into a query embedding,
-search the persistent Chroma knowledge index, apply structured metadata filters, and return
-ranked retrieval results with source attribution that later RAG and agent stages can cite.
-
-The retrieval flow is:
+The project now contains a stateful four-node troubleshooting workflow:
 
 ```text
-User troubleshooting query
-          ↓
-SentenceTransformerEmbedder.embed_query(...)
-          ↓
-Normalized query embedding
-          ↓
-Optional metadata filters
-          ↓
-Persistent Chroma collection
-          ↓
-Nearest-neighbor ranking
-          ↓
-VectorSearchHit
-          ↓
-RetrievalResult
-          ↓
-Citation-ready context for later RAG stages
+START
+  |
+  v
+classify
+  |
+  v
+retrieve
+  |
+  +---- no evidence ----------------------+
+  |                                       |
+  v                                       v
+diagnose                              verify
+  |                                       |
+  v                                       |
+verify <---- grounding retry --------------+
+  |
+  v
+ END
 ```
 
-## Retrieval design
+## Agent nodes
 
-The retrieval layer stays separated from Chroma-specific storage details.
+### 1. classify
 
-`VectorSearcher` is the small nearest-neighbor search contract consumed by the high-level
-retriever. `ChromaVectorStore` implements that contract and returns `VectorSearchHit` objects.
+The classifier converts the user's query into a structured `IssueClassification` with an issue
+category and only the service, endpoint, HTTP method, and status code that are explicit in the
+query.
 
-`SemanticRetriever` is responsible for:
+### 2. retrieve
 
-- validating the user query and result limit;
-- creating the query embedding through the existing `Embedder` abstraction;
-- converting troubleshooting filters into a Chroma `where` expression;
-- requesting nearest-neighbor results from the vector store;
-- converting stored source metadata into typed, citation-ready `RetrievalResult` objects.
+Classification-derived metadata is merged with any explicit CLI filters. Caller-provided
+filters take precedence. The existing semantic retriever then searches the persistent Chroma
+knowledge index.
 
-This keeps later RAG and LangGraph code independent of Chroma's raw query-result structure.
+### 3. diagnose
 
-## Retrieval result model
+The existing grounded generator creates a structured diagnosis from retrieved evidence. Causes,
+diagnostic steps, and remediation steps must cite retrieved evidence ranks.
 
-Each `RetrievalResult` contains:
+### 4. verify
+
+The verifier checks every generated evidence rank. If grounding fails, LangGraph conditionally
+routes back to `diagnose` with corrective feedback. Retries are bounded by:
 
 ```text
-rank
-chunk_id
-content
-source
-source_type
-distance
-metadata
-citation
+AGENT_MAX_GENERATION_ATTEMPTS=2
 ```
 
-`source` and `source_type` are promoted out of raw vector-store metadata so that downstream
-reasoning code cannot accidentally lose source attribution.
+If all attempts fail, the graph returns a safe low-confidence response with sources but no
+unsupported diagnosis.
 
-The computed `citation` field produces a compact label such as:
+If retrieval returns no evidence, generation is skipped entirely.
 
-```text
-[1] docs/authentication.md — Expired access tokens
+## Run the LangGraph agent
+
+Install/update dependencies:
+
+```bash
+pip install -e ".[dev]"
 ```
 
-The retrieval layer keeps Chroma's distance value rather than inventing a provider-specific
-similarity score. Lower distance means the result was ranked closer to the query.
-
-## Metadata-aware retrieval
-
-`RetrievalFilters` supports the troubleshooting signals already created during ingestion and
-chunking:
-
-```text
-source_types
-service
-endpoint
-http_method
-status_code
-metadata
-```
-
-`metadata` can contain additional scalar equality filters when a later workflow needs a field
-that is not yet modeled explicitly.
-
-Multiple filters are combined with Chroma's `$and` expression. Multiple source types use
-`$in`.
-
-Examples of useful retrieval constraints include:
-
-```text
-source_type = runbook
-service = order-service
-endpoint = /orders
-http_method = POST
-status_code = 503
-```
-
-Semantic ranking still happens inside the filtered candidate set.
-
-## Configuration
-
-Commit 6 adds one retrieval setting:
-
-```text
-RETRIEVAL_TOP_K=5
-```
-
-The complete retrieval/index configuration is now:
-
-```text
-EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2
-EMBEDDING_BATCH_SIZE=32
-CHROMA_PERSIST_DIR=chroma_db
-CHROMA_COLLECTION_NAME=order-service-knowledge
-VECTOR_UPSERT_BATCH_SIZE=64
-RETRIEVAL_TOP_K=5
-```
-
-Copy any new value you want from `.env.example` into your local `.env`. The default also works
-without explicitly adding it.
-
-## Build the index
-
-Commit 6 reads the persistent index created in Commit 5, so build or rebuild it first whenever
-knowledge or chunking changes:
+Build the index if needed:
 
 ```bash
 python -m scripts.build_index
 ```
 
-With the current sample knowledge base, the index should contain 61 chunks.
-
-## Query the index
-
-A small CLI is included for manual retrieval checks.
-
-Basic semantic search:
+Run:
 
 ```bash
-python -m scripts.query_index "Why am I getting 401 when calling the order API?"
+python -m scripts.agent_troubleshoot \
+  "Why am I getting 401 when calling the order API?"
 ```
 
-Return only three results:
+A more explicit failure:
 
 ```bash
-python -m scripts.query_index \
-  "Why is order creation returning 503?" \
-  --top-k 3
+python -m scripts.agent_troubleshoot \
+  "POST /api/v1/orders returns 503. What should I investigate?"
 ```
 
-Restrict the candidate set to runbooks:
+Explicit filters are still supported:
 
 ```bash
-python -m scripts.query_index \
-  "How should I troubleshoot expired authentication tokens?" \
-  --source-type runbook
-```
-
-Combine API metadata filters:
-
-```bash
-python -m scripts.query_index \
-  "Order creation is failing" \
+python -m scripts.agent_troubleshoot \
+  "Order creation is unavailable" \
   --service order-service \
-  --endpoint /orders \
+  --endpoint /api/v1/orders \
   --http-method POST \
   --status-code 503
 ```
 
-Multiple source types can be supplied by repeating the option:
-
-```bash
-python -m scripts.query_index \
-  "Find evidence for a database pool outage" \
-  --source-type runbook \
-  --source-type incident
-```
+The CLI prints a compact trace followed by the grounded diagnosis.
 
 ## Tests
-
-The test suite continues to avoid Sentence Transformer downloads by using deterministic or
-fixed in-memory test embedders.
-
-Run:
 
 ```bash
 ruff check .
 pytest
 ```
 
-Commit 6 tests cover:
+Commit 8 tests cover classification normalization, metadata-filter merging, the four-node happy
+path, no-evidence routing, grounding retries, retry exhaustion, and caller-filter precedence.
 
-- nearest-neighbor vector queries;
-- ranked hit conversion;
-- metadata filtering;
-- multiple source-type filters;
-- query and top-k validation;
-- empty collections;
-- source and source-type attribution;
-- citation generation;
-- custom scalar metadata filters.
+The agent tests use fakes and do not call OpenAI or Hugging Face.
 
-## Files added or changed
+## Commit boundary
 
-```text
-app/
-├── config.py
-└── rag/
-    ├── __init__.py
-    ├── retrieval.py
-    └── vector_store.py
+Commit 8 is intentionally limited to four-node LangGraph orchestration. It does not add a UI,
+production-system tools, long-term memory, a checkpointer, or automatic remediation.
 
-scripts/
-└── query_index.py
+## Next step
 
-tests/
-├── test_retrieval.py
-└── test_vector_store.py
-
-.env.example
-README.md
-```
-
-No new third-party dependency is required for this commit.
-
-## Architecture boundary
-
-Commit 6 is responsible for **retrieving evidence**.
-
-It deliberately does not yet generate a troubleshooting answer, call an LLM, inspect live logs,
-or introduce LangGraph orchestration. The output of this commit is a ranked collection of
-source-attributed evidence that those later stages can consume.
-
-## Next commit
-
-Commit 7 will build the baseline RAG troubleshooting pipeline on top of these retrieval results,
-so the system can turn retrieved evidence into a grounded diagnosis and remediation response.
+The next project stage can focus on evaluation and example scenarios: repeatable troubleshooting
+cases, retrieval/answer quality checks, and documented agent runs.
 
 ## Commit message
 
 ```text
-add metadata-aware semantic retrieval
+add LangGraph troubleshooting agent orchestration
 ```
